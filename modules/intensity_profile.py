@@ -15,19 +15,23 @@ from .base_module import FeatureModule
 
 @dataclass
 class ProfileSettings:
+    profile_mode: str = "axis"
     fixed_axis: str = "width"
     fixed_ratio: float = 0.50
     scan_start_ratio: float = 0.25
     scan_end_ratio: float = 0.75
+    line_start: Optional[Tuple[float, float]] = None
+    line_end: Optional[Tuple[float, float]] = None
+    line_samples: int = 300
     window_size: int = 11
 
 
 @dataclass
 class ProfileResult:
     name: str
-    fixed_index: int
-    scan_start: int
-    scan_end: int
+    fixed_index: Optional[int]
+    scan_start: Optional[int]
+    scan_end: Optional[int]
     indices: np.ndarray
     values: np.ndarray
 
@@ -70,6 +74,29 @@ class ImageLoader:
 
 
 class IntensityProfileAnalyzer:
+    @staticmethod
+    def bilinear_sample(image: np.ndarray, y: float, x: float) -> float:
+        h, w = image.shape
+        x = float(np.clip(x, 0.0, w - 1))
+        y = float(np.clip(y, 0.0, h - 1))
+
+        x0 = int(np.floor(x))
+        y0 = int(np.floor(y))
+        x1 = min(x0 + 1, w - 1)
+        y1 = min(y0 + 1, h - 1)
+
+        dx = x - x0
+        dy = y - y0
+
+        v00 = float(image[y0, x0])
+        v01 = float(image[y0, x1])
+        v10 = float(image[y1, x0])
+        v11 = float(image[y1, x1])
+
+        top = (1.0 - dx) * v00 + dx * v01
+        bottom = (1.0 - dx) * v10 + dx * v11
+        return (1.0 - dy) * top + dy * bottom
+
     @staticmethod
     def resolve_fixed_index(length: int, fixed_ratio: float) -> int:
         idx = int(length * fixed_ratio)
@@ -129,7 +156,7 @@ class IntensityProfileAnalyzer:
 
         return indices, values
 
-    def compute(self, image: np.ndarray, settings: ProfileSettings) -> Tuple[int, int, int, np.ndarray, np.ndarray]:
+    def compute_axis(self, image: np.ndarray, settings: ProfileSettings) -> Tuple[int, int, int, np.ndarray, np.ndarray]:
         h, w = image.shape
 
         if settings.fixed_axis == "width":
@@ -152,6 +179,52 @@ class IntensityProfileAnalyzer:
 
         return fixed_index, scan_start, scan_end, indices, values
 
+    def compute_line(self, image: np.ndarray, settings: ProfileSettings) -> Tuple[None, None, None, np.ndarray, np.ndarray]:
+        if settings.line_start is None or settings.line_end is None:
+            raise ValueError("Please select line start and end points.")
+
+        if settings.window_size < 1 or settings.window_size % 2 == 0:
+            raise ValueError("window_size must be an odd integer >= 1")
+
+        h, w = image.shape
+        x0 = settings.line_start[0] * max(w - 1, 1)
+        y0 = settings.line_start[1] * max(h - 1, 1)
+        x1 = settings.line_end[0] * max(w - 1, 1)
+        y1 = settings.line_end[1] * max(h - 1, 1)
+
+        dx = x1 - x0
+        dy = y1 - y0
+        length = float(np.hypot(dx, dy))
+        if length < 1e-8:
+            raise ValueError("Line length is too small. Please select two different points.")
+
+        nx = -dy / length
+        ny = dx / length
+
+        samples = max(int(settings.line_samples), 2)
+        t = np.linspace(0.0, 1.0, samples)
+        values = np.empty(samples, dtype=np.float64)
+        half = settings.window_size // 2
+
+        for i, tv in enumerate(t):
+            cx = x0 + dx * tv
+            cy = y0 + dy * tv
+            local_vals = []
+            for offset in range(-half, half + 1):
+                sx = cx + nx * offset
+                sy = cy + ny * offset
+                local_vals.append(self.bilinear_sample(image, sy, sx))
+            values[i] = float(np.mean(local_vals))
+
+        return None, None, None, t, values
+
+    def compute(self, image: np.ndarray, settings: ProfileSettings) -> Tuple[Optional[int], Optional[int], Optional[int], np.ndarray, np.ndarray]:
+        if settings.profile_mode == "axis":
+            return self.compute_axis(image, settings)
+        if settings.profile_mode == "line":
+            return self.compute_line(image, settings)
+        raise ValueError("profile_mode must be 'axis' or 'line'")
+
 
 class IntensityProfileModule(FeatureModule):
     name = "Intensity Profile"
@@ -162,13 +235,18 @@ class IntensityProfileModule(FeatureModule):
         self.current_image_index = 0
         self.analyzer = IntensityProfileAnalyzer()
 
+        self.profile_mode_var = tk.StringVar(value="axis")
         self.fixed_axis_var = tk.StringVar(value="width")
         self.fixed_ratio_var = tk.DoubleVar(value=0.50)
         self.start_ratio_var = tk.DoubleVar(value=0.25)
         self.end_ratio_var = tk.DoubleVar(value=0.75)
+        self.line_samples_var = tk.IntVar(value=300)
         self.window_size_var = tk.IntVar(value=11)
         self.save_mode_var = tk.StringVar(value="Composite")
         self.status_var = tk.StringVar(value="Ready. Load an image to start.")
+
+        self.line_start: Optional[Tuple[float, float]] = None
+        self.line_end: Optional[Tuple[float, float]] = None
 
         self.last_plot_settings: Optional[ProfileSettings] = None
         self.last_fixed_index: Optional[int] = None
@@ -196,6 +274,7 @@ class IntensityProfileModule(FeatureModule):
         )
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
 
         status_label = ttk.Label(self.frame, textvariable=self.status_var, anchor="w")
         status_label.pack(fill=tk.X, pady=(8, 0))
@@ -213,18 +292,40 @@ class IntensityProfileModule(FeatureModule):
         self.image_nav_label = ttk.Label(parent, text="Current image: N/A")
         self.image_nav_label.pack(anchor="w", pady=(0, 10))
 
-        ttk.Label(parent, text="Fixed Axis").pack(anchor="w")
-        axis_combo = ttk.Combobox(parent, textvariable=self.fixed_axis_var, state="readonly", values=["height", "width"])
+        ttk.Label(parent, text="Profile Mode").pack(anchor="w")
+        mode_combo = ttk.Combobox(parent, textvariable=self.profile_mode_var, state="readonly", values=["axis", "line"])
+        mode_combo.pack(fill=tk.X, pady=(0, 10))
+        mode_combo.bind("<<ComboboxSelected>>", lambda _: self.update_mode_ui())
+
+        self.axis_frame = ttk.LabelFrame(parent, text="Axis Parameters", padding=8)
+
+        ttk.Label(self.axis_frame, text="Fixed Axis").pack(anchor="w")
+        axis_combo = ttk.Combobox(self.axis_frame, textvariable=self.fixed_axis_var, state="readonly", values=["height", "width"])
         axis_combo.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(parent, text="Fixed Ratio [0, 1]").pack(anchor="w")
-        ttk.Entry(parent, textvariable=self.fixed_ratio_var).pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(self.axis_frame, text="Fixed Ratio [0, 1]").pack(anchor="w")
+        ttk.Entry(self.axis_frame, textvariable=self.fixed_ratio_var).pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(parent, text="Scan Start Ratio [0, 1]").pack(anchor="w")
-        ttk.Entry(parent, textvariable=self.start_ratio_var).pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(self.axis_frame, text="Scan Start Ratio [0, 1]").pack(anchor="w")
+        ttk.Entry(self.axis_frame, textvariable=self.start_ratio_var).pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(parent, text="Scan End Ratio [0, 1]").pack(anchor="w")
-        ttk.Entry(parent, textvariable=self.end_ratio_var).pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(self.axis_frame, text="Scan End Ratio [0, 1]").pack(anchor="w")
+        ttk.Entry(self.axis_frame, textvariable=self.end_ratio_var).pack(fill=tk.X, pady=(0, 10))
+
+        self.line_frame = ttk.LabelFrame(parent, text="Line Parameters", padding=8)
+
+        ttk.Label(
+            self.line_frame,
+            text="Click two points on the left image:\nfirst click=start, second click=end.",
+        ).pack(anchor="w", pady=(0, 6))
+
+        self.line_points_label = ttk.Label(self.line_frame, text="Line points: not selected")
+        self.line_points_label.pack(anchor="w", pady=(0, 6))
+
+        ttk.Button(self.line_frame, text="Clear Line Points", command=self.on_clear_line_points).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(self.line_frame, text="Line Samples").pack(anchor="w")
+        ttk.Spinbox(self.line_frame, from_=50, to=5000, increment=50, textvariable=self.line_samples_var).pack(fill=tk.X, pady=(0, 6))
 
         ttk.Label(parent, text="Window Size (odd)").pack(anchor="w")
         ttk.Spinbox(parent, from_=1, to=101, increment=2, textvariable=self.window_size_var).pack(fill=tk.X, pady=(0, 14))
@@ -239,6 +340,66 @@ class IntensityProfileModule(FeatureModule):
 
         ttk.Button(parent, text="Plot Profile", command=self.on_plot).pack(fill=tk.X)
         ttk.Button(parent, text="Save Plot", command=self.on_save_plot).pack(fill=tk.X, pady=(8, 0))
+
+        self.update_mode_ui()
+        self.update_line_points_label()
+
+    def update_mode_ui(self) -> None:
+        if self.profile_mode_var.get() == "line":
+            self.axis_frame.pack_forget()
+            self.line_frame.pack(fill=tk.X, pady=(0, 10))
+        else:
+            self.line_frame.pack_forget()
+            self.axis_frame.pack(fill=tk.X, pady=(0, 10))
+
+    def update_line_points_label(self) -> None:
+        if self.line_start is None and self.line_end is None:
+            text = "Line points: not selected"
+        elif self.line_start is not None and self.line_end is None:
+            text = f"Start: ({self.line_start[0]:.3f}, {self.line_start[1]:.3f})\nEnd: waiting click"
+        else:
+            start = self.line_start
+            end = self.line_end
+            if start is None or end is None:
+                text = "Line points: not selected"
+                self.line_points_label.config(text=text)
+                return
+            text = (
+                f"Start: ({start[0]:.3f}, {start[1]:.3f})\n"
+                f"End: ({end[0]:.3f}, {end[1]:.3f})"
+            )
+        self.line_points_label.config(text=text)
+
+    def on_clear_line_points(self) -> None:
+        self.line_start = None
+        self.line_end = None
+        self.update_line_points_label()
+        self.plot_current_preview_only()
+
+    def on_canvas_click(self, event) -> None:
+        if self.profile_mode_var.get() != "line":
+            return
+        if event.inaxes != self.ax_image:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        if not self.images:
+            return
+
+        x = float(np.clip(event.xdata, 0.0, 1.0))
+        y = float(np.clip(event.ydata, 0.0, 1.0))
+
+        if self.line_start is None or (self.line_start is not None and self.line_end is not None):
+            self.line_start = (x, y)
+            self.line_end = None
+        else:
+            self.line_end = (x, y)
+
+        self.update_line_points_label()
+        if self.line_start is not None and self.line_end is not None:
+            self.on_plot()
+        else:
+            self.plot_current_preview_only()
 
     def draw_empty(self) -> None:
         self.ax_image.clear()
@@ -357,22 +518,36 @@ class IntensityProfileModule(FeatureModule):
         return self.images[self.current_image_index]
 
     def read_settings(self) -> ProfileSettings:
+        mode = self.profile_mode_var.get()
         ratio = float(self.fixed_ratio_var.get())
         start = float(self.start_ratio_var.get())
         end = float(self.end_ratio_var.get())
+        line_samples = int(self.line_samples_var.get())
         window = int(self.window_size_var.get())
 
-        if not (0.0 <= ratio <= 1.0 and 0.0 <= start <= 1.0 and 0.0 <= end <= 1.0):
-            raise ValueError("All ratios must be within [0, 1].")
+        if mode == "axis":
+            if not (0.0 <= ratio <= 1.0 and 0.0 <= start <= 1.0 and 0.0 <= end <= 1.0):
+                raise ValueError("All ratios must be within [0, 1].")
+        elif mode == "line":
+            if self.line_start is None or self.line_end is None:
+                raise ValueError("Please click two points on the left image for line mode.")
+            if line_samples < 2:
+                raise ValueError("Line samples must be >= 2.")
+        else:
+            raise ValueError("Profile mode must be 'axis' or 'line'.")
 
         if window < 1 or window % 2 == 0:
             raise ValueError("Window size must be an odd integer >= 1.")
 
         return ProfileSettings(
+            profile_mode=mode,
             fixed_axis=self.fixed_axis_var.get(),
             fixed_ratio=ratio,
             scan_start_ratio=start,
             scan_end_ratio=end,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            line_samples=line_samples,
             window_size=window,
         )
 
@@ -408,9 +583,14 @@ class IntensityProfileModule(FeatureModule):
             self.fig.tight_layout()
             self.canvas.draw_idle()
 
-            self.status_var.set(
-                f"Plotted {len(self.profile_results)} profile(s): axis={settings.fixed_axis}, fixed_index={self.last_fixed_index}, scan=[{self.last_scan_start}, {self.last_scan_end}], window={settings.window_size}"
-            )
+            if settings.profile_mode == "axis":
+                self.status_var.set(
+                    f"Plotted {len(self.profile_results)} profile(s): mode=axis, axis={settings.fixed_axis}, fixed_index={self.last_fixed_index}, scan=[{self.last_scan_start}, {self.last_scan_end}], window={settings.window_size}"
+                )
+            else:
+                self.status_var.set(
+                    f"Plotted {len(self.profile_results)} profile(s): mode=line, samples={settings.line_samples}, window={settings.window_size}"
+                )
         except Exception as exc:
             messagebox.showerror("Plot Error", str(exc))
 
@@ -423,10 +603,22 @@ class IntensityProfileModule(FeatureModule):
 
     def draw_current_image_panel(self) -> None:
         image = self.current_image()
-        if image is None or self.last_plot_settings is None:
+        if image is None:
             return
 
-        fixed_index, scan_start, scan_end, _, _ = self.analyzer.compute(image.intensity, self.last_plot_settings)
+        overlay_mode = self.profile_mode_var.get()
+        fixed_index: Optional[int] = None
+        scan_start: Optional[int] = None
+        scan_end: Optional[int] = None
+
+        if overlay_mode == "axis":
+            try:
+                preview_settings = self.read_settings()
+                fixed_index, scan_start, scan_end, _, _ = self.analyzer.compute(image.intensity, preview_settings)
+            except Exception:
+                if self.last_plot_settings is not None and self.last_plot_settings.profile_mode == "axis":
+                    fixed_index, scan_start, scan_end, _, _ = self.analyzer.compute(image.intensity, self.last_plot_settings)
+
         h, w = image.shape
         self.ax_image.clear()
 
@@ -442,16 +634,30 @@ class IntensityProfileModule(FeatureModule):
         width_den = max(w - 1, 1)
         height_den = max(h - 1, 1)
 
-        if self.last_plot_settings.fixed_axis == "width":
-            x_fixed = fixed_index / width_den
-            y_start = scan_start / height_den
-            y_end = scan_end / height_den
-            self.ax_image.plot([x_fixed, x_fixed], [y_start, y_end], color="red", linewidth=2)
+        if overlay_mode == "axis":
+            if fixed_index is None or scan_start is None or scan_end is None:
+                pass
+            elif self.fixed_axis_var.get() == "width":
+                x_fixed = fixed_index / width_den
+                y_start = scan_start / height_den
+                y_end = scan_end / height_den
+                self.ax_image.plot([x_fixed, x_fixed], [y_start, y_end], color="red", linewidth=2)
+            else:
+                y_fixed = fixed_index / height_den
+                x_start = scan_start / width_den
+                x_end = scan_end / width_den
+                self.ax_image.plot([x_start, x_end], [y_fixed, y_fixed], color="red", linewidth=2)
         else:
-            y_fixed = fixed_index / height_den
-            x_start = scan_start / width_den
-            x_end = scan_end / width_den
-            self.ax_image.plot([x_start, x_end], [y_fixed, y_fixed], color="red", linewidth=2)
+            if self.line_start is not None:
+                self.ax_image.plot(self.line_start[0], self.line_start[1], marker="o", color="red", markersize=5)
+            if self.line_start is not None and self.line_end is not None:
+                self.ax_image.plot(
+                    [self.line_start[0], self.line_end[0]],
+                    [self.line_start[1], self.line_end[1]],
+                    color="red",
+                    linewidth=2,
+                )
+                self.ax_image.plot(self.line_end[0], self.line_end[1], marker="o", color="red", markersize=5)
 
         self.ax_image.set_xlim(0.0, 1.0)
         self.ax_image.set_ylim(1.0, 0.0)
@@ -479,7 +685,9 @@ class IntensityProfileModule(FeatureModule):
             self.ax_profile.plot(x, values, linewidth=1.8, label=self.format_display_name(item.name))
 
         self.ax_profile.set_title("Averaged Intensity Profile")
-        if use_normalized_x:
+        if self.last_plot_settings.profile_mode == "line":
+            self.ax_profile.set_xlabel("Line Position (0-1)")
+        elif use_normalized_x:
             self.ax_profile.set_xlabel("Relative Position (0-1)")
         else:
             self.ax_profile.set_xlabel(
@@ -522,7 +730,9 @@ class IntensityProfileModule(FeatureModule):
                     profile_ax.plot(x, values, linewidth=1.8, label=self.format_display_name(item.name))
 
                 profile_ax.set_title("Averaged Intensity Profile")
-                if use_normalized_x:
+                if self.last_plot_settings is not None and self.last_plot_settings.profile_mode == "line":
+                    profile_ax.set_xlabel("Line Position (0-1)")
+                elif use_normalized_x:
                     profile_ax.set_xlabel("Relative Position (0-1)")
                 elif self.last_plot_settings is not None:
                     profile_ax.set_xlabel(
