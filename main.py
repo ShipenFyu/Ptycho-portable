@@ -27,21 +27,18 @@ class PtychoImagingGUI:
         self.welcome_screen.update_module_buttons(self.modules, self.default_module_index)
 
     def build_ui(self) -> None:
-        self.container = ttk.Frame(self.root, padding=10)
+        self.container = ttk.Frame(self.root)
         self.container.pack(fill=tk.BOTH, expand=True)
-
-        header = ttk.Label(
-            self.container,
-            text="Ptychography Toolkit",
-            font=("Arial", 14, "bold"),
-        )
-        header.pack(anchor="w", pady=(0, 8))
 
         self.content_frame = ttk.Frame(self.container)
         self.content_frame.pack(fill=tk.BOTH, expand=True)
 
         self.notebook = ttk.Notebook(self.content_frame)
-        self.welcome_screen = WelcomeScreen(self.content_frame, self.open_module_tab)
+        self.welcome_screen = WelcomeScreen(
+            self.content_frame,
+            self.open_module_tab,
+            on_request_close=self.on_app_close,
+        )
 
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
 
