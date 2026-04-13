@@ -47,8 +47,6 @@ class WelcomeScreen:
 
         for index, module in enumerate(modules):
             label = f"Open {module.name}"
-            if index == default_module_index:
-                label = f"{label} (Default)"
 
             ttk.Button(
                 self.quick_access_frame,
