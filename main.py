@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from modules import IntensityProfileModule
+from modules import HsvFusionModule, IntensityProfileModule
 from modules.base_module import FeatureModule
 from welcome_screen import WelcomeScreen
 
@@ -18,7 +18,7 @@ class PtychoImagingGUI:
         self.maximize_window()
         self.root.protocol("WM_DELETE_WINDOW", self.on_app_close)
 
-        self.module_classes = [IntensityProfileModule]
+        self.module_classes = [IntensityProfileModule, HsvFusionModule]
         self.modules: list[FeatureModule] = []
         self.default_module_index = 0
         self.entered_workspace = False

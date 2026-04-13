@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 import tkinter as tk
@@ -706,6 +707,7 @@ class IntensityProfileModule(FeatureModule):
         path = filedialog.asksaveasfilename(
             title="Save Plot",
             defaultextension=".png",
+            initialfile=f"intensity-profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
             filetypes=[("PNG", "*.png"), ("PDF", "*.pdf"), ("All Files", "*.*")],
         )
 
