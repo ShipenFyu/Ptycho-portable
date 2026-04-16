@@ -222,9 +222,9 @@ class IntensityProfileAnalyzer:
     def compute(self, image: np.ndarray, settings: ProfileSettings) -> Tuple[Optional[int], Optional[int], Optional[int], np.ndarray, np.ndarray]:
         if settings.profile_mode == "axis":
             return self.compute_axis(image, settings)
-        if settings.profile_mode == "line":
+        if settings.profile_mode in ("line", "multi"):
             return self.compute_line(image, settings)
-        raise ValueError("profile_mode must be 'axis' or 'line'")
+        raise ValueError("profile_mode must be 'axis', 'line', or 'multi'")
 
 
 class IntensityProfileModule(FeatureModule):
@@ -248,6 +248,7 @@ class IntensityProfileModule(FeatureModule):
 
         self.line_start: Optional[Tuple[float, float]] = None
         self.line_end: Optional[Tuple[float, float]] = None
+        self.multi_line_points: dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
 
         self.last_plot_settings: Optional[ProfileSettings] = None
         self.last_fixed_index: Optional[int] = None
@@ -294,7 +295,7 @@ class IntensityProfileModule(FeatureModule):
         self.image_nav_label.pack(anchor="w", pady=(0, 10))
 
         ttk.Label(parent, text="Profile Mode").pack(anchor="w")
-        mode_combo = ttk.Combobox(parent, textvariable=self.profile_mode_var, state="readonly", values=["axis", "line"])
+        mode_combo = ttk.Combobox(parent, textvariable=self.profile_mode_var, state="readonly", values=["axis", "line", "multi"])
         mode_combo.pack(fill=tk.X, pady=(0, 10))
         mode_combo.bind("<<ComboboxSelected>>", lambda _: self.update_mode_ui())
 
@@ -315,10 +316,16 @@ class IntensityProfileModule(FeatureModule):
 
         self.line_frame = ttk.LabelFrame(parent, text="Line Parameters", padding=8)
 
-        ttk.Label(
+        self.line_instruction_var = tk.StringVar(
+            value="Click two points on the left image:\nfirst click=start, second click=end."
+        )
+        self.line_instruction_label = ttk.Label(
             self.line_frame,
-            text="Click two points on the left image:\nfirst click=start, second click=end.",
-        ).pack(anchor="w", pady=(0, 6))
+            textvariable=self.line_instruction_var,
+            wraplength=250,
+            justify="left",
+        )
+        self.line_instruction_label.pack(anchor="w", pady=(0, 6))
 
         self.line_points_label = ttk.Label(self.line_frame, text="Line points: not selected")
         self.line_points_label.pack(anchor="w", pady=(0, 6))
@@ -346,14 +353,41 @@ class IntensityProfileModule(FeatureModule):
         self.update_line_points_label()
 
     def update_mode_ui(self) -> None:
-        if self.profile_mode_var.get() == "line":
+        mode = self.profile_mode_var.get()
+        if mode in ("line", "multi"):
             self.axis_frame.pack_forget()
             self.line_frame.pack(fill=tk.X, pady=(0, 10))
+            if mode == "multi":
+                self.line_start = None
+                self.line_end = None
+                self.line_instruction_var.set(
+                    "Click two points on the left image:\nrepeat this for each image."
+                )
+            else:
+                self.line_instruction_var.set(
+                    "Click two points on the left image:\nfirst click=start, second click=end."
+                )
         else:
             self.line_frame.pack_forget()
             self.axis_frame.pack(fill=tk.X, pady=(0, 10))
+        self.update_line_points_label()
 
     def update_line_points_label(self) -> None:
+        mode = self.profile_mode_var.get()
+        if mode == "multi":
+            points = self.multi_line_points.get(self.current_image_index)
+            if points is None:
+                text = "Current image line: not selected"
+            else:
+                start, end = points
+                text = (
+                    f"Current image line\n"
+                    f"Start: ({start[0]:.3f}, {start[1]:.3f})\n"
+                    f"End: ({end[0]:.3f}, {end[1]:.3f})"
+                )
+            self.line_points_label.config(text=text)
+            return
+
         if self.line_start is None and self.line_end is None:
             text = "Line points: not selected"
         elif self.line_start is not None and self.line_end is None:
@@ -372,13 +406,23 @@ class IntensityProfileModule(FeatureModule):
         self.line_points_label.config(text=text)
 
     def on_clear_line_points(self) -> None:
-        self.line_start = None
-        self.line_end = None
+        if self.profile_mode_var.get() == "multi":
+            self.multi_line_points.pop(self.current_image_index, None)
+            self.line_start = None
+            self.line_end = None
+        else:
+            self.line_start = None
+            self.line_end = None
         self.update_line_points_label()
         self.plot_current_preview_only()
 
+    def get_profile_color(self, index: int) -> tuple:
+        cmap = plt.get_cmap("tab10")
+        return cmap(index % 10)
+
     def on_canvas_click(self, event) -> None:
-        if self.profile_mode_var.get() != "line":
+        mode = self.profile_mode_var.get()
+        if mode not in ("line", "multi"):
             return
         if event.inaxes != self.ax_image:
             return
@@ -390,15 +434,36 @@ class IntensityProfileModule(FeatureModule):
         x = float(np.clip(event.xdata, 0.0, 1.0))
         y = float(np.clip(event.ydata, 0.0, 1.0))
 
-        if self.line_start is None or (self.line_start is not None and self.line_end is not None):
-            self.line_start = (x, y)
-            self.line_end = None
+        if mode == "multi":
+            if self.line_start is None or self.line_end is not None:
+                self.line_start = (x, y)
+                self.line_end = None
+                self.multi_line_points.pop(self.current_image_index, None)
+            else:
+                self.line_end = (x, y)
         else:
-            self.line_end = (x, y)
+            if self.line_start is None or (self.line_start is not None and self.line_end is not None):
+                self.line_start = (x, y)
+                self.line_end = None
+            else:
+                self.line_end = (x, y)
+
+        if mode == "multi" and self.line_start is not None and self.line_end is not None:
+            self.multi_line_points[self.current_image_index] = (self.line_start, self.line_end)
 
         self.update_line_points_label()
         if self.line_start is not None and self.line_end is not None:
-            self.on_plot()
+            if mode == "multi":
+                missing_count = sum(1 for idx in range(len(self.images)) if idx not in self.multi_line_points)
+                if missing_count == 0:
+                    self.on_plot()
+                else:
+                    self.status_var.set(
+                        f"Multi mode: line saved for image {self.current_image_index + 1}/{len(self.images)}. Remaining images without lines: {missing_count}."
+                    )
+                    self.plot_current_preview_only()
+            else:
+                self.on_plot()
         else:
             self.plot_current_preview_only()
 
@@ -438,15 +503,27 @@ class IntensityProfileModule(FeatureModule):
                 self.current_image_index = len(self.images) - len(new_images)
 
             self.update_image_nav_label()
-            self.status_var.set(
-                f"Added {len(new_images)} image(s). Total images: {len(self.images)}"
-            )
-            self.on_plot()
+            if self.profile_mode_var.get() == "multi":
+                self.line_start = None
+                self.line_end = None
+                self.status_var.set(
+                    f"Added {len(new_images)} image(s). Total images: {len(self.images)}. Multi mode: draw one line per image."
+                )
+                self.plot_current_preview_only()
+            else:
+                self.status_var.set(
+                    f"Added {len(new_images)} image(s). Total images: {len(self.images)}"
+                )
+                self.on_plot()
         except Exception as exc:
             messagebox.showerror("Load Error", str(exc))
 
     def validate_image_shapes(self, new_images: list[ImageData]) -> None:
         if not new_images:
+            return
+
+        mode = self.profile_mode_var.get()
+        if mode == "multi":
             return
 
         if self.images:
@@ -469,6 +546,9 @@ class IntensityProfileModule(FeatureModule):
     def on_clear_images(self) -> None:
         self.images = []
         self.current_image_index = 0
+        self.line_start = None
+        self.line_end = None
+        self.multi_line_points = {}
         self.profile_results = []
         self.last_plot_settings = None
         self.last_fixed_index = None
@@ -499,18 +579,33 @@ class IntensityProfileModule(FeatureModule):
             return f"{stem}.{suffix}"
         return stem
 
+    def format_plot_label(self, filename: str, index: int) -> str:
+        """Return an ASCII-safe label for Matplotlib text rendering."""
+        label = self.format_display_name(filename)
+        if all(ord(ch) < 128 for ch in label):
+            return label
+        return f"img_{index + 1}"
+
     def on_prev_image(self) -> None:
         if not self.images:
             return
         self.current_image_index = (self.current_image_index - 1) % len(self.images)
+        if self.profile_mode_var.get() == "multi":
+            self.line_start = None
+            self.line_end = None
         self.update_image_nav_label()
+        self.update_line_points_label()
         self.plot_current_preview_only()
 
     def on_next_image(self) -> None:
         if not self.images:
             return
         self.current_image_index = (self.current_image_index + 1) % len(self.images)
+        if self.profile_mode_var.get() == "multi":
+            self.line_start = None
+            self.line_end = None
         self.update_image_nav_label()
+        self.update_line_points_label()
         self.plot_current_preview_only()
 
     def current_image(self) -> Optional[ImageData]:
@@ -534,8 +629,26 @@ class IntensityProfileModule(FeatureModule):
                 raise ValueError("Please click two points on the left image for line mode.")
             if line_samples < 2:
                 raise ValueError("Line samples must be >= 2.")
+        elif mode == "multi":
+            if line_samples < 2:
+                raise ValueError("Line samples must be >= 2.")
+            if not self.images:
+                raise ValueError("Please load one or more images first.")
+            missing = [
+                self.images[idx].path.name
+                for idx in range(len(self.images))
+                if idx not in self.multi_line_points
+            ]
+            if missing:
+                names = ", ".join(missing[:3])
+                if len(missing) > 3:
+                    names += f" ... (+{len(missing) - 3} more)"
+                raise ValueError(
+                    "Multi mode requires one line per image. "
+                    f"Missing line on: {names}"
+                )
         else:
-            raise ValueError("Profile mode must be 'axis' or 'line'.")
+            raise ValueError("Profile mode must be 'axis', 'line', or 'multi'.")
 
         if window < 1 or window % 2 == 0:
             raise ValueError("Window size must be an odd integer >= 1.")
@@ -561,8 +674,32 @@ class IntensityProfileModule(FeatureModule):
             settings = self.read_settings()
             self.profile_results = []
 
-            for image in self.images:
-                fixed_index, scan_start, scan_end, indices, values = self.analyzer.compute(image.intensity, settings)
+            for idx, image in enumerate(self.images):
+                image_settings = settings
+                if settings.profile_mode == "multi":
+                    start, end = self.multi_line_points[idx]
+                    image_settings = ProfileSettings(
+                        profile_mode="multi",
+                        fixed_axis=settings.fixed_axis,
+                        fixed_ratio=settings.fixed_ratio,
+                        scan_start_ratio=settings.scan_start_ratio,
+                        scan_end_ratio=settings.scan_end_ratio,
+                        line_start=start,
+                        line_end=end,
+                        line_samples=settings.line_samples,
+                        window_size=settings.window_size,
+                    )
+
+                fixed_index, scan_start, scan_end, indices, values = self.analyzer.compute(image.intensity, image_settings)
+
+                if settings.profile_mode == "multi":
+                    vmin = float(np.min(values))
+                    vmax = float(np.max(values))
+                    if vmax - vmin > 1e-12:
+                        values = (values - vmin) / (vmax - vmin)
+                    else:
+                        values = np.zeros_like(values, dtype=np.float64)
+
                 self.profile_results.append(
                     ProfileResult(
                         name=image.path.name,
@@ -588,17 +725,25 @@ class IntensityProfileModule(FeatureModule):
                 self.status_var.set(
                     f"Plotted {len(self.profile_results)} profile(s): mode=axis, axis={settings.fixed_axis}, fixed_index={self.last_fixed_index}, scan=[{self.last_scan_start}, {self.last_scan_end}], window={settings.window_size}"
                 )
-            else:
+            elif settings.profile_mode == "line":
                 self.status_var.set(
                     f"Plotted {len(self.profile_results)} profile(s): mode=line, samples={settings.line_samples}, window={settings.window_size}"
+                )
+            else:
+                self.status_var.set(
+                    f"Plotted {len(self.profile_results)} profile(s): mode=multi, normalized x/y to [0,1], samples={settings.line_samples}, window={settings.window_size}"
                 )
         except Exception as exc:
             messagebox.showerror("Plot Error", str(exc))
 
     def plot_current_preview_only(self) -> None:
-        if not self.images or not self.profile_results:
+        if not self.images:
             return
         self.draw_current_image_panel()
+        if not self.profile_results:
+            self.ax_profile.clear()
+            self.ax_profile.set_title("Intensity Profile")
+            self.ax_profile.grid(True, alpha=0.3)
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
@@ -649,16 +794,27 @@ class IntensityProfileModule(FeatureModule):
                 x_end = scan_end / width_den
                 self.ax_image.plot([x_start, x_end], [y_fixed, y_fixed], color="red", linewidth=2)
         else:
-            if self.line_start is not None:
-                self.ax_image.plot(self.line_start[0], self.line_start[1], marker="o", color="red", markersize=5)
-            if self.line_start is not None and self.line_end is not None:
+            if overlay_mode == "multi":
+                color = "red"
+                points = self.multi_line_points.get(self.current_image_index)
+                if points is not None:
+                    draw_start, draw_end = points
+                else:
+                    draw_start, draw_end = self.line_start, self.line_end
+            else:
+                color = "red"
+                draw_start, draw_end = self.line_start, self.line_end
+
+            if draw_start is not None:
+                self.ax_image.plot(draw_start[0], draw_start[1], marker="o", color=color, markersize=5)
+            if draw_start is not None and draw_end is not None:
                 self.ax_image.plot(
-                    [self.line_start[0], self.line_end[0]],
-                    [self.line_start[1], self.line_end[1]],
-                    color="red",
+                    [draw_start[0], draw_end[0]],
+                    [draw_start[1], draw_end[1]],
+                    color=color,
                     linewidth=2,
                 )
-                self.ax_image.plot(self.line_end[0], self.line_end[1], marker="o", color="red", markersize=5)
+                self.ax_image.plot(draw_end[0], draw_end[1], marker="o", color=color, markersize=5)
 
         self.ax_image.set_xlim(0.0, 1.0)
         self.ax_image.set_ylim(1.0, 0.0)
@@ -672,21 +828,23 @@ class IntensityProfileModule(FeatureModule):
 
         self.ax_profile.clear()
 
-        # Use normalized x-axis when images have different profile lengths.
+        # Use normalized x-axis when images have different profile lengths,
+        # or always in multi mode for explicit cross-image alignment.
         lengths = [len(item.indices) for item in self.profile_results]
-        use_normalized_x = len(set(lengths)) != 1
+        use_normalized_x = self.last_plot_settings.profile_mode == "multi" or len(set(lengths)) != 1
 
-        for item in self.profile_results:
+        for idx, item in enumerate(self.profile_results):
             indices = np.asarray(item.indices)
             values = np.asarray(item.values)
             if use_normalized_x:
                 x = np.linspace(0.0, 1.0, len(indices))
             else:
                 x = indices
-            self.ax_profile.plot(x, values, linewidth=1.8, label=self.format_display_name(item.name))
+            color = self.get_profile_color(idx)
+            self.ax_profile.plot(x, values, linewidth=1.8, color=color, label=self.format_plot_label(item.name, idx))
 
         self.ax_profile.set_title("Averaged Intensity Profile")
-        if self.last_plot_settings.profile_mode == "line":
+        if self.last_plot_settings.profile_mode in ("line", "multi"):
             self.ax_profile.set_xlabel("Line Position (0-1)")
         elif use_normalized_x:
             self.ax_profile.set_xlabel("Relative Position (0-1)")
@@ -694,7 +852,10 @@ class IntensityProfileModule(FeatureModule):
             self.ax_profile.set_xlabel(
                 "Height Position" if self.last_plot_settings.fixed_axis == "width" else "Width Position"
             )
-        self.ax_profile.set_ylabel("Intensity")
+        if self.last_plot_settings.profile_mode == "multi":
+            self.ax_profile.set_ylabel("Normalized Intensity (0-1)")
+        else:
+            self.ax_profile.set_ylabel("Intensity")
         self.ax_profile.grid(True, alpha=0.3)
         if len(self.profile_results) > 1:
             self.ax_profile.legend(fontsize=8)
@@ -720,19 +881,23 @@ class IntensityProfileModule(FeatureModule):
                 profile_ax = profile_fig.add_subplot(111)
 
                 lengths = [len(item.indices) for item in self.profile_results]
-                use_normalized_x = len(set(lengths)) != 1
+                use_normalized_x = (
+                    self.last_plot_settings is not None
+                    and self.last_plot_settings.profile_mode == "multi"
+                ) or len(set(lengths)) != 1
 
-                for item in self.profile_results:
+                for idx, item in enumerate(self.profile_results):
                     indices = np.asarray(item.indices)
                     values = np.asarray(item.values)
                     if use_normalized_x:
                         x = np.linspace(0.0, 1.0, len(indices))
                     else:
                         x = indices
-                    profile_ax.plot(x, values, linewidth=1.8, label=self.format_display_name(item.name))
+                    color = self.get_profile_color(idx)
+                    profile_ax.plot(x, values, linewidth=1.8, color=color, label=self.format_plot_label(item.name, idx))
 
                 profile_ax.set_title("Averaged Intensity Profile")
-                if self.last_plot_settings is not None and self.last_plot_settings.profile_mode == "line":
+                if self.last_plot_settings is not None and self.last_plot_settings.profile_mode in ("line", "multi"):
                     profile_ax.set_xlabel("Line Position (0-1)")
                 elif use_normalized_x:
                     profile_ax.set_xlabel("Relative Position (0-1)")
@@ -740,7 +905,10 @@ class IntensityProfileModule(FeatureModule):
                     profile_ax.set_xlabel(
                         "Height Position" if self.last_plot_settings.fixed_axis == "width" else "Width Position"
                     )
-                profile_ax.set_ylabel("Intensity")
+                if self.last_plot_settings is not None and self.last_plot_settings.profile_mode == "multi":
+                    profile_ax.set_ylabel("Normalized Intensity (0-1)")
+                else:
+                    profile_ax.set_ylabel("Intensity")
                 profile_ax.grid(True, alpha=0.3)
                 if len(self.profile_results) > 1:
                     profile_ax.legend(fontsize=8)
