@@ -11,7 +11,7 @@ from modules.base_module import FeatureModule
 
 
 class WelcomeScreen:
-    """Animated welcome screen with crossfade background and frameless splash-like UI."""
+    """Animated welcome screen with a static background and frameless splash-like UI."""
 
     # Color constants for animations
     TITLE_COLOR_START = "#505862"
@@ -46,9 +46,8 @@ class WelcomeScreen:
         self.use_overlay_mask = True
         self.overlay_alpha_top = 172
         self.overlay_alpha_bottom = 124
-        self.switch_interval_ms = 2000  # image pause duration in milliseconds
-        self.transition_ms = 250        # transition duration in milliseconds
-        self.transition_fps = 60        # frame rate for smooth rendering
+        self.transition_ms = 250
+        self.transition_fps = 60
 
         self.bg_canvas: tk.Canvas
         self.canvas_image_id: int | None = None
@@ -63,7 +62,7 @@ class WelcomeScreen:
 
         self.background_images = self.load_background_images()
         self.current_index = 0
-        self.next_index = 1 if len(self.background_images) > 1 else 0
+        self.next_index = 0
 
         self.current_resized: Image.Image | None = None
         self.next_resized: Image.Image | None = None
@@ -71,7 +70,6 @@ class WelcomeScreen:
         self.transition_step = 0
         self.transition_total_steps = max(1, int(self.transition_ms / (1000 / self.transition_fps)))
         self.transition_after_id: str | None = None
-        self.switch_after_id: str | None = None
 
         self.last_w = 1
         self.last_h = 1
@@ -172,7 +170,6 @@ class WelcomeScreen:
 
         self.enable_frameless_mode()
         self.render_background(0.0)
-        self.schedule_next_switch()
         self.play_entry_animation()
 
     def enable_frameless_mode(self) -> None:
@@ -248,7 +245,7 @@ class WelcomeScreen:
                     continue
 
         if images:
-            return images
+            return [images[0]]
 
         palette = [
             ("#0b1020", "#133457"),
@@ -337,43 +334,6 @@ class WelcomeScreen:
             self.next_resized = self.next_resized.resize(self.current_resized.size, Image.Resampling.LANCZOS)
         blended = Image.blend(self.current_resized, self.next_resized, max(0.0, min(1.0, blend_t)))
         self.set_canvas_image(blended)
-
-    def schedule_next_switch(self) -> None:
-        if self.switch_after_id is not None:
-            self.frame.after_cancel(self.switch_after_id)
-        self.switch_after_id = self.frame.after(self.switch_interval_ms, self.start_transition)
-
-    def start_transition(self) -> None:
-        if len(self.background_images) < 2:
-            self.schedule_next_switch()
-            return
-        self.in_transition = True
-        self.transition_step = 0
-        self.run_transition_frame()
-
-    def run_transition_frame(self) -> None:
-        if not self.in_transition:
-            return
-
-        # Apply Cubic Ease-Out easing function for smooth transition
-        # Linear progress from 0.0 to 1.0
-        t_linear = self.transition_step / max(1, self.transition_total_steps)
-        # Eased progress: fast start, slow end for natural deceleration effect
-        t_ease = 1 - (1 - t_linear) ** 3 
-        
-        self.render_background(t_ease)
-
-        if self.transition_step >= self.transition_total_steps:
-            self.in_transition = False
-            self.current_index = self.next_index
-            self.next_index = (self.current_index + 1) % len(self.background_images)
-            self.render_background(0.0)
-            self.schedule_next_switch()
-            return
-
-        self.transition_step += 1
-        delay = int(1000 / self.transition_fps)
-        self.transition_after_id = self.frame.after(delay, self.run_transition_frame)
 
     def animate_value(self, duration_ms: int, callback: Callable[[float], None]) -> None:
         delay = int(1000 / self.transition_fps)
@@ -594,9 +554,6 @@ class WelcomeScreen:
             self.render_background(0.0)
 
     def hide(self) -> None:
-        if self.switch_after_id is not None:
-            self.frame.after_cancel(self.switch_after_id)
-            self.switch_after_id = None
         if self.transition_after_id is not None:
             self.frame.after_cancel(self.transition_after_id)
             self.transition_after_id = None
@@ -614,5 +571,3 @@ class WelcomeScreen:
         self.frame.pack(fill=tk.BOTH, expand=True)
         self.enable_frameless_mode()
         self.render_background(0.0)
-        if self.switch_after_id is None and not self.in_transition:
-            self.schedule_next_switch()
