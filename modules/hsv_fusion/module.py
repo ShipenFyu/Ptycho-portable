@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -11,84 +10,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backend_bases import MouseButton
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.colors import hsv_to_rgb
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
-from matplotlib.colors import Normalize
 
-from .base_module import FeatureModule
-
-
-@dataclass
-class TensorData:
-    name: str
-    values: np.ndarray
-    display: np.ndarray
-
-    @property
-    def shape(self) -> Tuple[int, int]:
-        return self.values.shape
-
-
-class TensorAdapter:
-    @staticmethod
-    def as_2d_float(array: np.ndarray, tensor_name: str) -> np.ndarray:
-        arr = np.asarray(array)
-        arr = np.squeeze(arr)
-        if arr.ndim != 2:
-            raise ValueError(f"Tensor '{tensor_name}' is not 2D after squeeze. Got shape={arr.shape}")
-        if np.iscomplexobj(arr):
-            raise ValueError(f"Tensor '{tensor_name}' must be real-valued, but got complex dtype={arr.dtype}")
-        return arr.astype(np.float32, copy=False)
-
-    @staticmethod
-    def amplitude_values(array: np.ndarray, tensor_name: str) -> np.ndarray:
-        return TensorAdapter.as_2d_float(array, tensor_name)
-
-    @staticmethod
-    def phase_values(array: np.ndarray, tensor_name: str) -> np.ndarray:
-        return TensorAdapter.as_2d_float(array, tensor_name)
-    
-
-class CenteredPowerNorm(Normalize):
-    def __init__(self, gamma=0.5, vcenter=0, vmin=-np.pi, vmax=np.pi):
-        self.gamma = gamma
-        self.vcenter = vcenter
-        super().__init__(vmin, vmax)
-
-    def __call__(self, value, clip=None):
-        value = np.asarray(value)
-        if self.vmin is None or self.vmax is None:
-            raise ValueError("Vmin and Vmax must be set before normalization")
-
-        if clip is None:
-            clip = self.clip
-
-        vmin = float(self.vmin)
-        vmax = float(self.vmax)
-        vcenter = float(self.vcenter)
-
-        if vmin >= vmax:
-            raise ValueError("vmin must be less than vmax")
-        if not (vmin < vcenter < vmax):
-            raise ValueError("vcenter must be between vmin and vmax")
-
-        if clip:
-            value = np.clip(value, vmin, vmax)
-
-        # Symmetric power mapping around vcenter:
-        # vcenter -> 0.5, vmin -> 0, vmax -> 1
-        neg_span = vcenter - vmin
-        pos_span = vmax - vcenter
-        scale = np.where(value < vcenter, neg_span, pos_span)
-        scale = np.where(scale == 0, 1.0, scale)
-
-        signed = (value - vcenter) / scale
-        signed = np.clip(signed, -1.0, 1.0)
-        mag = np.abs(signed) ** self.gamma
-        res = 0.5 + 0.5 * np.sign(signed) * mag
-
-        return np.ma.masked_array(res)
+from ..base_module import FeatureModule
+from .color_norm import CenteredPowerNorm
+from .fusion import HsvFusionProcessor
+from .models import TensorData
+from .tensor_adapter import TensorAdapter
 
 
 class HsvFusionModule(FeatureModule):
@@ -107,6 +36,7 @@ class HsvFusionModule(FeatureModule):
         self.current_input_key: str = "amp"
         self.roi_norm: Optional[Tuple[float, float, float, float]] = None
         self.output_rgb: Optional[np.ndarray] = None
+        self.processor = HsvFusionProcessor()
 
         self.input_selector: Optional[RectangleSelector] = None
 
@@ -455,21 +385,6 @@ class HsvFusionModule(FeatureModule):
 
         return x0, y0, x1, y1
 
-    def phase_to_hue(self, phase: np.ndarray) -> np.ndarray:
-        phase_min = float(np.min(phase))
-        phase_max = float(np.max(phase))
-
-        if phase_min >= -np.pi and phase_max <= np.pi:
-            hue = (phase + np.pi) / (2 * np.pi)
-        else:
-            span = phase_max - phase_min
-            if span > 1e-12:
-                hue = (phase - phase_min) / span
-            else:
-                hue = np.zeros_like(phase, dtype=np.float32)
-
-        return np.clip(hue, 0.0, 1.0).astype(np.float32)
-
     def run_fusion_from_roi(self, show_dialog: bool) -> None:
         if self.amp_tensor is None or self.phase_tensor is None or self.roi_norm is None:
             return
@@ -492,17 +407,10 @@ class HsvFusionModule(FeatureModule):
 
         x0, y0, x1, y1 = self.normalized_roi_to_pixels(self.amp_tensor.shape)
 
-        amp_roi = self.amp_tensor.values[y0 : y1 + 1, x0 : x1 + 1].astype(np.float32)
-        phase_roi = self.phase_tensor.values[y0 : y1 + 1, x0 : x1 + 1].astype(np.float32)
+        amp_roi = self.amp_tensor.values[y0 : y1 + 1, x0 : x1 + 1]
+        phase_roi = self.phase_tensor.values[y0 : y1 + 1, x0 : x1 + 1]
 
-        hsv_image = np.zeros((amp_roi.shape[0], amp_roi.shape[1], 3), dtype=np.float32)
-        hsv_image[..., 0] = self.phase_to_hue(phase_roi)
-        hsv_image[..., 1] = saturation
-
-        amp_max = float(np.max(amp_roi))
-        hsv_image[..., 2] = amp_roi / amp_max if amp_max > 0 else amp_roi
-
-        self.output_rgb = hsv_to_rgb(hsv_image)
+        self.output_rgb = self.processor.fuse(amp_roi, phase_roi, saturation)
         self.draw_output_panel()
         self.status_var.set(
             f"HSV fusion done. ROI pixels: x=[{x0}, {x1}], y=[{y0}, {y1}], saturation={saturation:.3f}"

@@ -5,9 +5,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
-from PIL import Image, ImageFilter, ImageTk, ImageDraw
+from PIL import Image, ImageTk, ImageDraw
 
-from modules.base_module import FeatureModule
+from ..base_module import FeatureModule
+from .backgrounds import WelcomeBackgrounds
 
 
 class WelcomeScreen:
@@ -218,67 +219,20 @@ class WelcomeScreen:
         self.root.geometry(f"+{x}+{y}")
 
     def hex_to_rgb(self, color: str) -> tuple[int, int, int]:
-        color = color.strip("#")
-        return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+        return WelcomeBackgrounds.hex_to_rgb(color)
 
     def mix_color(self, c0: str, c1: str, t: float) -> str:
-        t = max(0.0, min(1.0, t))
-        r0, g0, b0 = self.hex_to_rgb(c0)
-        r1, g1, b1 = self.hex_to_rgb(c1)
-        r = int(r0 + (r1 - r0) * t)
-        g = int(g0 + (g1 - g0) * t)
-        b = int(b0 + (b1 - b0) * t)
-        return f"#{r:02x}{g:02x}{b:02x}"
+        return WelcomeBackgrounds.mix_color(c0, c1, t)
 
     def load_background_images(self) -> list[Image.Image]:
-        bg_dir = Path(__file__).resolve().parent / "background"
-        supported = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-        images: list[Image.Image] = []
-
-        if bg_dir.exists() and bg_dir.is_dir():
-            for path in sorted(bg_dir.iterdir()):
-                if path.suffix.lower() not in supported:
-                    continue
-                try:
-                    images.append(Image.open(path).convert("RGB"))
-                except Exception:
-                    continue
-
-        if images:
-            return [images[0]]
-
-        palette = [
-            ("#0b1020", "#133457"),
-            ("#10131c", "#2a3450"),
-            ("#111826", "#214866"),
-        ]
-        generated: list[Image.Image] = []
-        for c0, c1 in palette:
-            generated.append(self.create_gradient_image(1600, 900, c0, c1).filter(ImageFilter.GaussianBlur(radius=4)))
-        return generated
+        bg_dir = Path(__file__).resolve().parents[2] / "background"
+        return WelcomeBackgrounds.load_images(bg_dir)
 
     def create_gradient_image(self, width: int, height: int, c0: str, c1: str) -> Image.Image:
-        """Generate high-quality gradient by scaling a micro image using bilinear interpolation."""
-        small_img = Image.new("RGB", (2, 2))
-        p0 = self.hex_to_rgb(c0)
-        p1 = self.hex_to_rgb(c1)
-        small_img.putpixel((0, 0), p0)
-        small_img.putpixel((1, 1), p1)
-        small_img.putpixel((0, 1), self.hex_to_rgb(self.mix_color(c0, c1, 0.5)))
-        small_img.putpixel((1, 0), self.hex_to_rgb(self.mix_color(c0, c1, 0.5)))
-        return small_img.resize((width, height), Image.Resampling.BILINEAR)
+        return WelcomeBackgrounds.create_gradient_image(width, height, c0, c1)
 
     def resize_cover(self, image: Image.Image, width: int, height: int) -> Image.Image:
-        width = max(1, int(width))
-        height = max(1, int(height))
-        iw, ih = image.size
-        scale = max(width / iw, height / ih)
-        new_w = max(1, int(iw * scale))
-        new_h = max(1, int(ih * scale))
-        resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        left = (new_w - width) // 2
-        top = (new_h - height) // 2
-        return resized.crop((left, top, left + width, top + height))
+        return WelcomeBackgrounds.resize_cover(image, width, height)
 
     def prepare_resized_pair(self) -> None:
         if not self.background_images:

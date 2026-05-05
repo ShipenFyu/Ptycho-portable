@@ -3,9 +3,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from modules import HsvFusionModule, IntensityProfileModule
+from modules import HsvFusionModule, IntensityProfileModule, WelcomeScreen
 from modules.base_module import FeatureModule
-from welcome_screen import WelcomeScreen
 
 
 class PtychoImagingGUI:
