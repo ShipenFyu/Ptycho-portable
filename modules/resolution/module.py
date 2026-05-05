@@ -65,6 +65,7 @@ class ResolutionModule(FeatureModule):
         self.ax_esf = self.fig.add_subplot(grid[1, 1])
         self.ax_lsf = self.fig.add_subplot(grid[2, 1])
         self.ax_mtf = self.fig.add_subplot(grid[3, 1])
+        self.fig.subplots_adjust(left=0.04, right=0.98, top=0.94, bottom=0.08, wspace=0.28, hspace=0.78)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -336,7 +337,6 @@ class ResolutionModule(FeatureModule):
         self.draw_image_panel()
         self.draw_roi_panel()
         self.draw_curve_panels()
-        self.fig.tight_layout()
         self.canvas.draw_idle()
 
     def draw_image_panel(self) -> None:
