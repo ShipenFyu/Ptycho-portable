@@ -6,6 +6,7 @@ The app currently includes:
 
 - **Intensity Profile**: load one or more images and plot averaged intensity profiles in axis, line, or multi-image line mode.
 - **HSV Fusion**: load amplitude/phase tensors from an `.npz` file, select an ROI, and export an HSV-fused RGB result.
+- **Resolution**: estimate image resolution. The current method is knife-edge analysis using ESF, LSF, and MTF curves.
 
 ## Requirements
 
@@ -84,6 +85,45 @@ Phase handling:
 - If phase values are within `[-pi, pi]`, hue is mapped across that range.
 - Otherwise, hue is normalized across the selected phase ROI value range.
 
+## Resolution
+
+Use this module to estimate image resolution. The current implementation uses the knife-edge method on a single image ROI.
+
+Supported image formats:
+
+- `.png`
+- `.jpg` / `.jpeg`
+- `.bmp`
+- `.tif` / `.tiff`
+
+Basic workflow:
+
+1. Click **Load Image**.
+2. Drag a ROI around one clean knife edge on the left image.
+3. Click **Analyze ROI**.
+4. Check the cyan detected edge line on the original image and ROI preview.
+5. Read **MTF50**, **MTF10**, and **10-90 width** in the result panel.
+6. Optionally enter a real **Pixel Size** and unit to convert frequency to `lp/mm` and edge width to physical units.
+7. Click **Save Plot** or **Save CSV** to export the curves and measurements.
+
+Use **Zoom In**, **Zoom Out**, **Reset**, or the mouse wheel over the original image to enlarge the view before drawing the ROI.
+
+ROI selection tips:
+
+- The ROI should contain one edge only.
+- The edge should pass through most of the ROI.
+- Keep both bright and dark flat regions inside the ROI.
+- Avoid corners, texture, strong artifacts, or multiple transitions.
+- A slightly slanted edge is preferred because it improves oversampled ESF reconstruction.
+
+Measured curves:
+
+- **ESF**: edge spread function, sampled across the detected edge.
+- **LSF**: derivative of the smoothed ESF.
+- **MTF**: normalized Fourier magnitude of the LSF.
+
+Without pixel size, frequency is reported in `cycles/pixel`. With pixel size, it is also reported in `lp/mm`.
+
 ## Project Layout
 
 Feature modules live under `modules/`:
@@ -93,6 +133,7 @@ modules/
   base_module.py
   intensity_profile/
   hsv_fusion/
+  resolution/
   welcome/
 ```
 
@@ -103,4 +144,3 @@ Each feature package exposes its public class through `__init__.py`. The usual p
 - loader/adapter/processor files: pure loading, validation, and computation logic.
 
 This keeps UI code separate from logic that can be tested independently.
-
