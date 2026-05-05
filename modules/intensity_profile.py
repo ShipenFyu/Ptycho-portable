@@ -413,6 +413,7 @@ class IntensityProfileModule(FeatureModule):
         else:
             self.line_start = None
             self.line_end = None
+        self.clear_profile_results()
         self.update_line_points_label()
         self.plot_current_preview_only()
 
@@ -439,12 +440,14 @@ class IntensityProfileModule(FeatureModule):
                 self.line_start = (x, y)
                 self.line_end = None
                 self.multi_line_points.pop(self.current_image_index, None)
+                self.clear_profile_results()
             else:
                 self.line_end = (x, y)
         else:
             if self.line_start is None or (self.line_start is not None and self.line_end is not None):
                 self.line_start = (x, y)
                 self.line_end = None
+                self.clear_profile_results()
             else:
                 self.line_end = (x, y)
 
@@ -503,12 +506,21 @@ class IntensityProfileModule(FeatureModule):
                 self.current_image_index = len(self.images) - len(new_images)
 
             self.update_image_nav_label()
-            if self.profile_mode_var.get() == "multi":
+            mode = self.profile_mode_var.get()
+            if mode == "multi":
                 self.line_start = None
                 self.line_end = None
+                self.clear_profile_results()
                 self.status_var.set(
                     f"Added {len(new_images)} image(s). Total images: {len(self.images)}. Multi mode: draw one line per image."
                 )
+                self.plot_current_preview_only()
+            elif mode == "line" and (self.line_start is None or self.line_end is None):
+                self.clear_profile_results()
+                self.status_var.set(
+                    f"Added {len(new_images)} image(s). Total images: {len(self.images)}. Line mode: click two points to plot."
+                )
+                self.update_line_points_label()
                 self.plot_current_preview_only()
             else:
                 self.status_var.set(
@@ -549,14 +561,17 @@ class IntensityProfileModule(FeatureModule):
         self.line_start = None
         self.line_end = None
         self.multi_line_points = {}
+        self.clear_profile_results()
+        self.update_image_nav_label()
+        self.draw_empty()
+        self.status_var.set("Cleared all loaded images.")
+
+    def clear_profile_results(self) -> None:
         self.profile_results = []
         self.last_plot_settings = None
         self.last_fixed_index = None
         self.last_scan_start = None
         self.last_scan_end = None
-        self.update_image_nav_label()
-        self.draw_empty()
-        self.status_var.set("Cleared all loaded images.")
 
     def update_image_nav_label(self) -> None:
         if not self.images:
